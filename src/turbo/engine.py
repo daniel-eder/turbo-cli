@@ -7,6 +7,15 @@ EXE_PATH = USER_DATA / "llama-server.exe"
 LOG_FILE = USER_DATA / "server.log"
 
 
+def check_cuda_available():
+    if sys.platform != "win32":
+        return True
+    result = subprocess.run(
+        ["nvidia-smi"], capture_output=True, text=True
+    )
+    return result.returncode == 0
+
+
 def unpack_engine():
     if EXE_PATH.exists():
         return str(EXE_PATH)

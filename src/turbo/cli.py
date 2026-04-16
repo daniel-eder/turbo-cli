@@ -2,7 +2,7 @@ import os, sys, json, subprocess, time, urllib.request, signal, atexit, argparse
 from pathlib import Path
 import questionary
 
-__version__ = "1.1.5"
+__version__ = "1.1.6"
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -60,7 +60,13 @@ signal.signal(signal.SIGINT, lambda *a: sys.exit(0))
 
 def run(cfg):
     global proc
-    from .engine import get_engine, add_dll_directory, LOG_FILE
+    from .engine import get_engine, add_dll_directory, LOG_FILE, check_cuda_available
+
+    if not check_cuda_available():
+        console.print("[yellow]WARNING: CUDA not detected. GPU acceleration may not work.[/]")
+        console.print("[dim]If you have an NVIDIA GPU, install CUDA drivers from nvidia.com/drivers[/]")
+        console.print("[dim]Without CUDA, the server will run on CPU (slow).[/]")
+        console.print()
 
     if proc is not None:
         try:

@@ -6,6 +6,23 @@ echo   Turbo CLI Setup
 echo ========================================
 echo.
 
+REM Check for LFS pointers (downloaded via ZIP instead of git clone)
+findstr /C:"version https://git-lfs.github.com" src\turbo\bin\*.dll src\turbo\data\engine.zip 2>nul >nul
+if not errorlevel 1 (
+    echo [ERROR] Detected Git LFS pointer files!
+    echo.
+    echo You downloaded the repository via "Download ZIP" instead of git clone.
+    echo LFS pointer files are NOT the actual binaries.
+    echo.
+    echo Please run these commands instead:
+    echo   git clone https://github.com/md-exitcode0/turbo-cli.git
+    echo   cd turbo-cli
+    echo   setup.bat
+    echo.
+    pause
+    exit /b 1
+)
+
 REM Check Python using py launcher
 py --version >nul 2>&1
 if errorlevel 1 (
