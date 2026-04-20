@@ -1,4 +1,4 @@
-import os, sys, json, subprocess, time, urllib.request, signal, atexit, argparse, zipfile, tempfile, shutil
+import os, sys, json, subprocess, time, urllib.request, signal, atexit, argparse, zipfile, tempfile, shutil, shlex
 from pathlib import Path
 import questionary
 
@@ -17,6 +17,37 @@ CONFIG = CFG / "config.json"
 TYPES = ["f16", "q8_0", "q4_0", "turbo2", "turbo3", "turbo4"]
 CTX = [8192, 16384, 32768, 65536, 131072, 200000, 262144]
 proc = None
+
+
+def parse_extra_args(raw):
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        args = [str(x) for x in raw]
+    elif isinstance(raw, str):
+        raw = raw.strip()
+        args = shlex.split(raw) if raw else []
+    else:
+        return []
+
+    if args and args[0] == "--":
+        args = args[1:]
+    return args
+
+
+def get_preset_llama_args(cfg):
+    raw = cfg.get("llama_args")
+    if isinstance(raw, dict):
+        if "argv" in raw:
+            return parse_extra_args(raw.get("argv"))
+        if "raw" in raw:
+            return parse_extra_args(raw.get("raw"))
+        return []
+    return parse_extra_args(raw)
+
+
+def get_combined_llama_args(cfg, cli_extra_args=None):
+    return get_preset_llama_args(cfg) + parse_extra_args(cli_extra_args)
 
 
 def load_config():
@@ -58,7 +89,7 @@ atexit.register(cleanup)
 signal.signal(signal.SIGINT, lambda *a: sys.exit(0))
 
 
-def run(cfg):
+def run(cfg, cli_extra_args=None):
     global proc
     from .engine import get_engine, add_dll_directory, LOG_FILE, check_cuda_available
 
@@ -118,6 +149,9 @@ def run(cfg):
         cmd += ["--mmproj", str(cfg["mmproj"])]
     if cfg.get("ncmoe"):
         cmd += ["-ncmoe", str(cfg["ncmoe"])]
+    extra_llama_args = get_combined_llama_args(cfg, cli_extra_args)
+    if extra_llama_args:
+        cmd += extra_llama_args
     console.print(
         Panel("[bold]Starting Server...[/]", border_style="green", box=box.ROUNDED)
     )
@@ -135,6 +169,8 @@ def run(cfg):
         t.add_row("Parallel Slots", str(cfg["parallel"]))
     if cfg.get("mmproj"):
         t.add_row("MMProj", os.path.basename(cfg["mmproj"]))
+    if extra_llama_args:
+        t.add_row("Extra Args", " ".join(extra_llama_args), style="magenta")
     t.add_row("Address", f"http://{cfg['host']}:{cfg['port']}", style="yellow")
     console.print(t)
 
@@ -206,7 +242,7 @@ def save_presets(p):
     PRESETS.write_text(json.dumps(p, indent=2))
 
 
-def cmd_launch(name=None):
+def cmd_launch(name=None, extra_args=None):
     p = load_presets()
     if name:
         if name not in p:
@@ -286,6 +322,12 @@ def cmd_launch(name=None):
             only_directories=False,
             qmark="",
         ).ask()
+        extra_args_raw = questionary.text(
+            "Extra llama-server args (optional, passed as-is):",
+            default="",
+            qmark="",
+        ).ask()
+        preset_llama_args = parse_extra_args(extra_args_raw)
 
         model_gb = os.path.getsize(m) / 1024**3
         # Assume hidden dimension of 4096 (typical for 7B-9B models like Qwen 2.5)
@@ -349,6 +391,7 @@ def cmd_launch(name=None):
                     "no_mmap": no_mmap,
                     "reasoning": reasoning,
                     "mmproj": mmproj,
+                    "llama_args": {"argv": preset_llama_args},
                 }
                 save_presets(p)
                 console.print(f"[green]Saved preset '{nm}'[/]")
@@ -365,8 +408,9 @@ def cmd_launch(name=None):
             "no_mmap": no_mmap,
             "reasoning": reasoning,
             "mmproj": mmproj,
+            "llama_args": {"argv": preset_llama_args},
         }
-    run(cfg)
+    run(cfg, extra_args)
 
 
 def cmd_presets():
@@ -431,6 +475,11 @@ def cmd_preset_create(name=None):
     mmproj = questionary.path(
         "MMProj path (optional):", only_directories=False, qmark=""
     ).ask()
+    extra_args_raw = questionary.text(
+        "Extra llama-server args (optional, passed as-is):",
+        default="",
+        qmark="",
+    ).ask()
     nm = (
         name
         or questionary.text(
@@ -453,6 +502,7 @@ def cmd_preset_create(name=None):
         "no_mmap": no_mmap,
         "reasoning": reasoning,
         "mmproj": mmproj,
+        "llama_args": {"argv": parse_extra_args(extra_args_raw)},
         "created": time.strftime("%H:%M"),
     }
     save_presets(p)
@@ -611,6 +661,8 @@ def main():
 Commands:
   turbo launch              Start server interactively or with preset
   turbo launch <name>       Launch saved preset
+  turbo launch <name> -- <llama args...>
+                            Pass extra args directly to llama-server
   turbo presets             List presets interactively
   turbo preset create       Create new preset
   turbo preset list         List all presets
@@ -634,9 +686,15 @@ Run 'turbo <command> --help' for more information on a command.
         "-h", "--help", action="help", help="show this help message and exit"
     )
     sub = parser.add_subparsers(dest="cmd", help="Command to run")
-    sub.add_parser(
+    launch_parser = sub.add_parser(
         "launch", help="Start server interactively or with preset"
-    ).add_argument("preset", nargs="?", help="Preset name")
+    )
+    launch_parser.add_argument("preset", nargs="?", help="Preset name")
+    launch_parser.add_argument(
+        "extra_args",
+        nargs=argparse.REMAINDER,
+        help="Extra llama-server args after --",
+    )
     sub.add_parser("presets", help="List presets interactively")
     pp = sub.add_parser("preset", help="Manage presets")
     pps = pp.add_subparsers(dest="preset_cmd")
@@ -653,7 +711,7 @@ Run 'turbo <command> --help' for more information on a command.
 
     a = parser.parse_args()
     if a.cmd == "launch":
-        cmd_launch(a.preset)
+        cmd_launch(a.preset, a.extra_args)
     elif a.cmd == "presets":
         cmd_presets()
     elif a.cmd == "preset":
