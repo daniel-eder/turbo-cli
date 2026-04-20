@@ -17,11 +17,15 @@ def main():
     parent_bin = script_dir / "src" / "turbo" / "bin" / "llama-server.exe"
     build_bin = script_dir / "build" / "bin" / "llama-server.exe"
 
+    bundle_dir = None
+
     if parent_bin.exists():
         prebuilt_exe = parent_bin
+        bundle_dir = parent_bin.parent
         print(f"Using pre-built: {parent_bin}")
     elif build_bin.exists():
         prebuilt_exe = build_bin
+        bundle_dir = build_bin.parent
         print(f"Using pre-built: {build_bin}")
 
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -43,8 +47,8 @@ def main():
         zipf.write(prebuilt_exe, "llama-server.exe")
         print("  Added: llama-server.exe")
 
-        # Add DLLs from same directory
-        bin_dir = prebuilt_exe.parent
+        # Add DLLs from bundle directory
+        bin_dir = bundle_dir or prebuilt_exe.parent
         for dll in bin_dir.glob("*.dll"):
             zipf.write(dll, dll.name)
             print(f"  Added: {dll.name}")
