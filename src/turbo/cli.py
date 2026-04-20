@@ -92,6 +92,10 @@ def run(cfg):
         str(cfg["port"]),
         "--host",
         cfg["host"],
+        "-ctk",
+        cfg["k"],
+        "-ctv",
+        cfg["v"],
         "-ngl",
         str(cfg["ngl"]),
         "--flash-attn",
@@ -99,6 +103,7 @@ def run(cfg):
         "--log-file",
         str(LOG_FILE),
     ]
+    # Add optional flags
     if cfg.get("ts"):
         cmd += ["-ts", str(cfg["ts"])]
     if cfg.get("parallel") and int(cfg["parallel"]) > 1:
@@ -258,6 +263,8 @@ def cmd_launch(name=None):
         port = int(
             questionary.text("Server Port:", default="8080", qmark="").ask() or "8080"
         )
+
+        # Optional flags
         ts = questionary.text(
             "Tensor Split (-ts, e.g. 13,14 for dual GPU, leave empty for single):",
             qmark="",
@@ -281,18 +288,25 @@ def cmd_launch(name=None):
         ).ask()
 
         model_gb = os.path.getsize(m) / 1024**3
+        # Assume hidden dimension of 4096 (typical for 7B-9B models like Qwen 2.5)
         HIDDEN_DIM = 4096
 
+        # Calculate KV cache: K + V per layer × number of layers
+        # Bytes per element: f16=2, q8_0=1, turbo3/4=~0.4 (compressed)
         def cache_bytes(cache_type):
             if cache_type == "f16":
                 return 2.0
             elif cache_type in ["turbo3", "turbo4"]:
                 return 0.4
-            else:
+            else:  # q8_0, q4_0
                 return 1.0
 
         bytes_per_token = cache_bytes(k) + cache_bytes(v)
-        KV_DIM = 2048
+        # KV cache formula: ctx * n_kv_heads * head_dim * 2 * bytes_per_token / 1GB
+        # n_kv_heads=8 (GQA), head_dim=128 standard for most models
+        # factor of 2 accounts for both K and V tensors
+        # Using n_kv_heads * head_dim * 2 = 2048 (typical for GQA models)
+        KV_DIM = 2048  # n_kv_heads * head_dim * 2
         kv_gb = cs * KV_DIM * bytes_per_token / (1024**3)
 
         est = model_gb * min(1, n / 100) + kv_gb + 0.5
@@ -503,14 +517,17 @@ def cmd_vram(subcmd=None, value=None):
 
 
 def cmd_update():
+    """Download latest version from GitHub and update installation"""
     console.print(
         Panel("[bold]Updating Turbo CLI...[/]", border_style="cyan", box=box.ROUNDED)
     )
 
+    # Get current installation path
     install_path = Path(__file__).parent.parent.parent
     console.print(f"[dim]Current install: {install_path}[/]")
 
     try:
+        # Get latest release version
         api_url = "https://api.github.com/repos/md-exitcode0/turbo-cli/releases/latest"
         console.print("[dim]Checking for latest release...[/]")
 
@@ -520,20 +537,26 @@ def cmd_update():
             zipball_url = release_data["zipball_url"]
 
         console.print(f"[dim]Latest release: {tag_name}[/]")
+
+        # Download release zip
         console.print("[dim]Downloading...[/]")
 
         with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
             urllib.request.urlretrieve(zipball_url, tmp.name)
             zip_path = tmp.name
 
+        # Extract to temp
         with tempfile.TemporaryDirectory() as tmpdir:
             with zipfile.ZipFile(zip_path, "r") as z:
                 z.extractall(tmpdir)
 
+            # Find extracted folder (turbo-cli-main/)
             extracted = next(Path(tmpdir).iterdir())
 
+            # Copy updated files, preserving user config
             console.print("[dim]Updating files...[/]")
 
+            # Files to update
             files_to_update = [
                 ("src/turbo/cli.py", "src/turbo/cli.py"),
                 ("src/turbo/engine.py", "src/turbo/engine.py"),
@@ -549,12 +572,14 @@ def cmd_update():
                     shutil.copy2(src, dst)
                     console.print(f"  Updated: {dst_rel}", style="green")
 
+            # Update engine.zip if exists
             engine_zip_src = extracted / "src/turbo/data/engine.zip"
             engine_zip_dst = install_path / "src/turbo/data/engine.zip"
             if engine_zip_src.exists():
                 shutil.copy2(engine_zip_src, engine_zip_dst)
                 console.print("  Updated: engine.zip", style="green")
 
+            # Update bin/ if exists
             bin_src = extracted / "src/turbo/bin"
             bin_dst = install_path / "src/turbo/bin"
             if bin_src.exists():
